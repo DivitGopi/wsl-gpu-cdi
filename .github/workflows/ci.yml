@@ -1,0 +1,76 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -s sh bin/wsl-gpu install.sh tests/run.sh init/openrc/wsl-gpu-cdi
+
+  unit-ubuntu:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        shell: [dash, bash]
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install pyyaml
+      - name: tests (${{ matrix.shell }})
+        run: ${{ matrix.shell }} tests/run.sh
+
+  unit-alpine:
+    runs-on: ubuntu-latest
+    container: alpine:3.24
+    steps:
+      - uses: actions/checkout@v4
+      - run: apk add --no-cache python3 py3-yaml
+      - name: tests (busybox ash)
+        run: sh tests/run.sh
+
+  # No GPU on GitHub's runners, so a fake /usr/lib/wsl tree is used to prove
+  # that Docker accepts the generated spec and applies every edit in it.
+  docker-cdi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable CDI in Docker if needed
+        run: |
+          docker version --format 'docker {{.Server.Version}}'
+          dirs="$(docker info --format '{{json .CDISpecDirs}}')"
+          echo "CDI dirs: $dirs"
+          if [ -z "$dirs" ] || [ "$dirs" = "null" ] || [ "$dirs" = "[]" ]; then
+            f=/etc/docker/daemon.json
+            [ -s "$f" ] || echo '{}' | sudo tee "$f" >/dev/null
+            jq '.features.cdi = true' "$f" | sudo tee "$f.new" >/dev/null
+            sudo mv "$f.new" "$f"
+            sudo systemctl restart docker
+          fi
+      - name: Generate a spec from a fake WSL tree
+        run: |
+          mkdir -p fx/lib fx/drivers/nvami.inf_amd64_ci fx/drivers/u0000.inf_amd64_other
+          for f in libcuda.so.1 libdxcore.so; do echo fake > "fx/lib/$f"; done
+          echo fake > fx/drivers/nvami.inf_amd64_ci/libcuda.so.1.1
+          echo fake > fx/drivers/u0000.inf_amd64_other/other.so
+          sudo env WSL_GPU_DXG=/dev/null WSL_GPU_LIB_DIR="$PWD/fx/lib" \
+            WSL_GPU_DRIVERS_DIR="$PWD/fx/drivers" WSL_GPU_CDI_DIR=/etc/cdi \
+            sh bin/wsl-gpu generate
+          cat /etc/cdi/nvidia-wsl.yaml
+      - name: Docker applies the spec
+        run: |
+          docker run --rm --device nvidia.com/gpu=all alpine:3.24 sh -ec '
+            test -c /dev/dxg;                                         echo "device /dev/dxg: ok"
+            test -f /usr/lib/wsl/lib/libcuda.so.1;                    echo "WSL libs: ok"
+            test -f /usr/lib/wsl/drivers/nvami.inf_amd64_ci/libcuda.so.1.1; echo "NVIDIA driver folder: ok"
+            test ! -e /usr/lib/wsl/drivers/u0000.inf_amd64_other;     echo "other drivers not mounted: ok"
+            if touch /usr/lib/wsl/lib/x 2>/dev/null; then echo "mount is writable"; exit 1; fi
+            echo "mounts read-only: ok"
+            case "$LD_LIBRARY_PATH" in /usr/lib/wsl/lib:*) echo "LD_LIBRARY_PATH: ok" ;; *) exit 1 ;; esac
+          '

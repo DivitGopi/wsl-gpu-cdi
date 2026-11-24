@@ -1,0 +1,19 @@
+#!/sbin/openrc-run
+# SPDX-License-Identifier: MIT
+# Regenerates the WSL2 GPU CDI spec at boot, before Docker starts.
+# /var/run/cdi is cleared on boot and the NVIDIA driver folder changes name on
+# every Windows driver update, so the spec is rebuilt each time.
+
+# shellcheck disable=SC2034 # read by openrc-run
+description="Generate the CDI spec for the WSL2 NVIDIA GPU"
+
+depend() {
+	need localmount
+	before docker containerd podman
+}
+
+start() {
+	ebegin "Generating WSL2 GPU CDI spec"
+	@BINDIR@/wsl-gpu generate --if-present --quiet
+	eend $?
+}

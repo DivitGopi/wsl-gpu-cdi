@@ -1,0 +1,10 @@
+# Docker Compose with the WSL2 GPU through wsl-gpu.
+#   docker compose -f examples/compose.yaml run --rm cuda-smoke
+services:
+  cuda-smoke:
+    image: python:3.12-slim
+    command: python3 /t/cuda-smoke.py
+    volumes:
+      - ../tests:/t:ro
+    devices:
+      - nvidia.com/gpu=all
